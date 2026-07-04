@@ -203,6 +203,7 @@ export default function App() {
     }).eq("id", 1);
     if (error) console.error(error);
     setSettings(await fetchSettings());
+    return !error;
   }
 
   async function tryLogin() {
@@ -675,13 +676,19 @@ function OrdersTab({ orders, onUpdateOrderStatus, onDeleteOrder }) {
 function SettingsTab({ settings, onSaveSettings }) {
   const [form, setForm] = useState(settings);
   const [saved, setSaved] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => { setForm(settings); }, [settings]);
 
-  function save() {
-    onSaveSettings(form);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+  async function save() {
+    setFailed(false);
+    const ok = await onSaveSettings(form);
+    if (ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } else {
+      setFailed(true);
+    }
   }
 
   return (
@@ -703,6 +710,7 @@ function SettingsTab({ settings, onSaveSettings }) {
         <button onClick={save} style={{ background: COLORS.gold, color: "#1A1300" }} className="w-full py-2.5 rounded-xl font-bold text-sm mt-1">
           {saved ? "اتحفظ ✓" : "حفظ"}
         </button>
+        {failed && <p style={{ color: COLORS.coral }} className="text-xs mt-2">مانفعش يتحفظ — جرب تسجل خروج ودخول تاني</p>}
       </div>
     </div>
   );
