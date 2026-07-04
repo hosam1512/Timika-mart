@@ -47,7 +47,7 @@ async function fetchOrders() {
     total: o.total,
     status: o.status,
     createdAt: o.created_at,
-    customer: { name: o.customer_name, phone: o.customer_phone, address: o.customer_address, method: o.payment_method, note: o.note },
+    customer: { name: o.customer_name, phone: o.customer_phone, address: o.customer_address, method: o.payment_method, note: o.note, proofUrl: o.payment_proof_url },
   }));
 }
 async function fetchSettings() {
@@ -152,6 +152,7 @@ export default function App() {
       customer_address: customer.address,
       payment_method: customer.method,
       note: customer.note,
+      payment_proof_url: customer.proofUrl,
       status: "review",
     };
     const { data, error } = await supabase.from("orders").insert(payload).select().single();
@@ -378,10 +379,10 @@ export default function App() {
             <div style={{ background: COLORS.teal }} className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3">
               <Check size={26} color="#0B1F1A" />
             </div>
-            <p style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold text-lg mb-1">اتسجل طلبك</p>
+            <p style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold text-lg mb-1">طلبك وصلنا وقيد المراجعة</p>
             <p style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.gold }} className="mb-3">{confirmedOrder.code}</p>
             <p style={{ color: COLORS.textDim }} className="text-sm mb-4">
-              حوّل مبلغ {confirmedOrder.total} ج.م على الرقم اللي ظهرلك، وهيتم تأكيد الطلب بعد التحويل.
+              هنراجع عملية التحويل بتاعتك ونأكدلك الطلب. لو حوّلت فعلاً {confirmedOrder.total} ج.م، هيتم قبول الطلب قريب.
             </p>
             <button onClick={() => setConfirmedOrder(null)} style={{ background: COLORS.gold, color: "#1A1300" }} className="w-full py-2.5 rounded-xl font-bold text-sm">
               تمام
@@ -456,14 +457,44 @@ function CheckoutModal({ total, settings, submitting, onClose, onSubmit }) {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [method, setMethod] = useState("vodafone");
-  const [note, setNote] = useState("");
+  const [phoneError, setPhoneError] = useState("");
+  const [proofFile, setProofFile] = useState(null);
+  const [proofPreview, setProofPreview] = useState("");
+  const [proofError, setProofError] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   const methodLabel = { vodafone: "فودافون كاش", instapay: "انستاباي", bank: "تحويل بنكي" };
   const methodValue = { vodafone: settings.vodafone, instapay: settings.instapay, bank: settings.bank };
 
-  function submit() {
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setProofFile(file);
+    setProofPreview(URL.createObjectURL(file));
+    setProofError("");
+  }
+
+  async function submit() {
     if (!name.trim() || !phone.trim() || !address.trim()) return;
-    onSubmit({ name, phone, address, method: methodLabel[method], note });
+    if (!/^01[0125][0-9]{8}$/.test(phone.trim())) {
+      setPhoneError("رقم موبايل مصري غير صحيح (11 رقم يبدأ بـ 01)");
+      return;
+    }
+    if (!proofFile) {
+      setProofError("لازم ترفع صورة من التحويل عشان نأكد إنك دفعت");
+      return;
+    }
+    setUploading(true);
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${proofFile.name}`;
+    const { error: uploadError } = await supabase.storage.from("payment-proofs").upload(path, proofFile);
+    if (uploadError) {
+      setUploading(false);
+      setProofError("فشل رفع الصورة، حاول تاني");
+      return;
+    }
+    const { data } = supabase.storage.from("payment-proofs").getPublicUrl(path);
+    setUploading(false);
+    onSubmit({ name, phone, address, method: methodLabel[method], proofUrl: data.publicUrl });
   }
 
   return (
@@ -475,7 +506,8 @@ function CheckoutModal({ total, settings, submitting, onClose, onSubmit }) {
         </div>
         <div className="flex flex-col gap-3">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="الاسم" style={inputStyle} />
-          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="رقم الموبايل" style={inputStyle} />
+          <input value={phone} onChange={e => { setPhone(e.target.value.replace(/[^0-9]/g, "").slice(0, 11)); setPhoneError(""); }} placeholder="رقم الموبايل (11 رقم)" inputMode="numeric" style={{ ...inputStyle, border: `1px solid ${phoneError ? COLORS.coral : COLORS.border}` }} />
+          {phoneError && <p style={{ color: COLORS.coral }} className="text-xs -mt-1">{phoneError}</p>}
           <textarea value={address} onChange={e => setAddress(e.target.value)} placeholder="العنوان بالتفصيل" rows={2} style={inputStyle} />
 
           <div>
@@ -496,15 +528,26 @@ function CheckoutModal({ total, settings, submitting, onClose, onSubmit }) {
             </div>
           </div>
 
-          <input value={note} onChange={e => setNote(e.target.value)} placeholder="رقم عملية التحويل (اختياري)" style={inputStyle} />
+          <div>
+            <p style={{ color: COLORS.textDim }} className="text-xs mb-1.5">صورة إثبات التحويل (إجباري)</p>
+            <label style={{ background: COLORS.surfaceHi, border: `1px dashed ${proofError ? COLORS.coral : COLORS.border}` }} className="flex items-center justify-center gap-2 rounded-lg py-4 cursor-pointer text-xs">
+              <input type="file" accept="image/*" onChange={handleFile} className="hidden" />
+              {proofPreview ? (
+                <img src={proofPreview} className="h-16 rounded-md object-cover" />
+              ) : (
+                <span style={{ color: COLORS.textDim }}>دوس هنا ترفع سكرين شوت التحويل</span>
+              )}
+            </label>
+            {proofError && <p style={{ color: COLORS.coral }} className="text-xs mt-1">{proofError}</p>}
+          </div>
 
           <div className="flex justify-between items-center mt-1 mb-2">
             <span style={{ color: COLORS.textDim }} className="text-sm">الإجمالي</span>
             <span style={{ fontFamily: "JetBrains Mono, monospace" }} className="font-bold">{total} ج.م</span>
           </div>
 
-          <button onClick={submit} disabled={submitting} style={{ background: COLORS.gold, color: "#1A1300", opacity: submitting ? 0.6 : 1 }} className="w-full py-3 rounded-xl font-bold text-sm">
-            {submitting ? "جاري الإرسال..." : "تأكيد الطلب"}
+          <button onClick={submit} disabled={submitting || uploading} style={{ background: COLORS.gold, color: "#1A1300", opacity: (submitting || uploading) ? 0.6 : 1 }} className="w-full py-3 rounded-xl font-bold text-sm">
+            {uploading ? "جاري رفع الصورة..." : submitting ? "جاري الإرسال..." : "تأكيد الطلب"}
           </button>
         </div>
       </div>
@@ -652,9 +695,14 @@ function OrdersTab({ orders, onUpdateOrderStatus, onDeleteOrder }) {
               ))}
             </div>
             <div className="flex justify-between items-center mb-3">
-              <span style={{ color: COLORS.textDim }} className="text-xs">{o.customer.method}{o.customer.note ? ` · ${o.customer.note}` : ""}</span>
+              <span style={{ color: COLORS.textDim }} className="text-xs">{o.customer.method}</span>
               <span style={{ fontFamily: "JetBrains Mono, monospace" }} className="font-bold text-sm">{o.total} ج.م</span>
             </div>
+            {o.customer.proofUrl && (
+              <a href={o.customer.proofUrl} target="_blank" rel="noreferrer" className="block mb-3">
+                <img src={o.customer.proofUrl} className="w-full max-h-40 object-contain rounded-lg" style={{ background: COLORS.surfaceHi, border: `1px solid ${COLORS.border}` }} />
+              </a>
+            )}
             <div className="flex gap-2 items-center">
               <select
                 value={o.status}
