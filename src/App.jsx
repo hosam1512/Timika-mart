@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   ShoppingCart, Search, Plus, Minus, Trash2, Lock, X, Package,
-  Check, Edit2, Loader2, Store
+  Check, Edit2, Loader2, Store, Mail, KeyRound
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -72,11 +72,23 @@ export default function App() {
   const [activeCat, setActiveCat] = useState("الكل");
 
   const [adminOpen, setAdminOpen] = useState(false);
-  const [authed, setAuthed] = useState(false);
-  const [pwInput, setPwInput] = useState("");
-  const [pwError, setPwError] = useState(false);
+  const [session, setSession] = useState(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
   const [adminTab, setAdminTab] = useState("products");
   const [editingProduct, setEditingProduct] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (session) reloadAll();
+  }, [session]);
 
   async function reloadAll() {
     setProducts(await fetchProducts());
@@ -193,14 +205,21 @@ export default function App() {
     setSettings(await fetchSettings());
   }
 
-  function tryLogin() {
-    if (pwInput === "1234") {
-      setAuthed(true);
-      setPwError(false);
-      setPwInput("");
+  async function tryLogin() {
+    setLoginError("");
+    setLoginLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword });
+    setLoginLoading(false);
+    if (error) {
+      setLoginError("الإيميل أو الباسورد غلط");
     } else {
-      setPwError(true);
+      setLoginPassword("");
     }
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setAdminOpen(false);
   }
 
   if (loading) {
@@ -370,37 +389,51 @@ export default function App() {
         </div>
       )}
 
-      {adminOpen && !authed && (
+      {adminOpen && !session && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.65)" }}>
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }} className="rounded-2xl p-6 max-w-xs w-full">
             <div className="flex justify-between items-center mb-4">
               <span style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold">دخول الأدمن</span>
-              <button onClick={() => { setAdminOpen(false); setPwError(false); setPwInput(""); }}><X size={18} /></button>
+              <button onClick={() => { setAdminOpen(false); setLoginError(""); }}><X size={18} /></button>
             </div>
-            <input
-              type="password"
-              value={pwInput}
-              onChange={e => setPwInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && tryLogin()}
-              placeholder="كلمة السر"
-              style={{ background: COLORS.surfaceHi, border: `1px solid ${pwError ? COLORS.coral : COLORS.border}`, color: COLORS.text }}
-              className="w-full rounded-lg px-3 py-2.5 text-sm outline-none mb-2"
-            />
-            {pwError && <p style={{ color: COLORS.coral }} className="text-xs mb-2">كلمة السر غلط</p>}
-            <p style={{ color: COLORS.textDim }} className="text-[11px] mb-3">حماية أساسية بس — غيّرها من ملف App.jsx قبل ما تنشر الموقع فعليًا.</p>
-            <button onClick={tryLogin} style={{ background: COLORS.gold, color: "#1A1300" }} className="w-full py-2.5 rounded-xl font-bold text-sm">
-              دخول
+            <div style={{ background: COLORS.surfaceHi, border: `1px solid ${COLORS.border}` }} className="flex items-center gap-2 rounded-lg px-3 mb-2">
+              <Mail size={15} style={{ color: COLORS.textDim }} />
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={e => setLoginEmail(e.target.value)}
+                placeholder="الإيميل"
+                style={{ background: "transparent", color: COLORS.text }}
+                className="w-full outline-none text-sm py-2.5"
+              />
+            </div>
+            <div style={{ background: COLORS.surfaceHi, border: `1px solid ${loginError ? COLORS.coral : COLORS.border}` }} className="flex items-center gap-2 rounded-lg px-3 mb-2">
+              <KeyRound size={15} style={{ color: COLORS.textDim }} />
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={e => setLoginPassword(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && tryLogin()}
+                placeholder="الباسورد"
+                style={{ background: "transparent", color: COLORS.text }}
+                className="w-full outline-none text-sm py-2.5"
+              />
+            </div>
+            {loginError && <p style={{ color: COLORS.coral }} className="text-xs mb-2">{loginError}</p>}
+            <button onClick={tryLogin} disabled={loginLoading} style={{ background: COLORS.gold, color: "#1A1300", opacity: loginLoading ? 0.6 : 1 }} className="w-full py-2.5 rounded-xl font-bold text-sm mt-1">
+              {loginLoading ? "جاري الدخول..." : "دخول"}
             </button>
           </div>
         </div>
       )}
 
-      {adminOpen && authed && (
+      {adminOpen && session && (
         <AdminPanel
           products={products}
           orders={orders}
           settings={settings}
-          onClose={() => { setAdminOpen(false); setAuthed(false); }}
+          onClose={() => setAdminOpen(false)}
+          onLogout={logout}
           onAddProduct={addProduct}
           onUpdateProduct={updateProduct}
           onDeleteProduct={deleteProduct}
@@ -489,12 +522,15 @@ const inputStyle = {
   width: "100%",
 };
 
-function AdminPanel({ products, orders, settings, onClose, onAddProduct, onUpdateProduct, onDeleteProduct, onUpdateOrderStatus, onDeleteOrder, onSaveSettings, tab, setTab, editingProduct, setEditingProduct }) {
+function AdminPanel({ products, orders, settings, onClose, onLogout, onAddProduct, onUpdateProduct, onDeleteProduct, onUpdateOrderStatus, onDeleteOrder, onSaveSettings, tab, setTab, editingProduct, setEditingProduct }) {
   return (
     <div className="fixed inset-0 z-50" style={{ background: COLORS.bg }}>
       <div style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface }} className="sticky top-0 flex items-center justify-between px-4 py-3">
         <span style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold">لوحة التحكم</span>
-        <button onClick={onClose}><X size={20} /></button>
+        <div className="flex items-center gap-3">
+          <button onClick={onLogout} style={{ color: COLORS.coral }} className="text-xs font-semibold">خروج</button>
+          <button onClick={onClose}><X size={20} /></button>
+        </div>
       </div>
       <div className="flex gap-2 px-4 py-3 overflow-x-auto">
         {[
