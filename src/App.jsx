@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   ShoppingCart, Search, Plus, Minus, Trash2, Lock, X, Package,
-  Check, Edit2, Loader2, Store, Mail, KeyRound
+  Check, Edit2, Loader2, Store, Mail, KeyRound, Upload, Download
 } from "lucide-react";
+import Papa from "papaparse";
 import { supabase } from "./supabaseClient";
 
 const FONTS = `
@@ -175,6 +176,12 @@ export default function App() {
     });
     if (error) console.error(error);
     setProducts(await fetchProducts());
+  }
+  async function bulkAddProducts(records) {
+    const { error } = await supabase.from("products").insert(records);
+    if (error) { console.error(error); return false; }
+    setProducts(await fetchProducts());
+    return true;
   }
   async function updateProduct(id, record) {
     const { error } = await supabase.from("products").update({
@@ -437,6 +444,7 @@ export default function App() {
           onClose={() => setAdminOpen(false)}
           onLogout={logout}
           onAddProduct={addProduct}
+          onBulkAddProducts={bulkAddProducts}
           onUpdateProduct={updateProduct}
           onDeleteProduct={deleteProduct}
           onUpdateOrderStatus={updateOrderStatus}
@@ -566,7 +574,7 @@ const inputStyle = {
   width: "100%",
 };
 
-function AdminPanel({ products, orders, settings, onClose, onLogout, onAddProduct, onUpdateProduct, onDeleteProduct, onUpdateOrderStatus, onDeleteOrder, onSaveSettings, tab, setTab, editingProduct, setEditingProduct }) {
+function AdminPanel({ products, orders, settings, onClose, onLogout, onAddProduct, onBulkAddProducts, onUpdateProduct, onDeleteProduct, onUpdateOrderStatus, onDeleteOrder, onSaveSettings, tab, setTab, editingProduct, setEditingProduct }) {
   return (
     <div className="fixed inset-0 z-50" style={{ background: COLORS.bg }}>
       <div style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface }} className="sticky top-0 flex items-center justify-between px-4 py-3">
@@ -593,7 +601,7 @@ function AdminPanel({ products, orders, settings, onClose, onLogout, onAddProduc
       </div>
       <div className="px-4 pb-8 overflow-y-auto" style={{ height: "calc(100vh - 110px)" }}>
         {tab === "products" && (
-          <ProductsTab products={products} onAddProduct={onAddProduct} onUpdateProduct={onUpdateProduct} onDeleteProduct={onDeleteProduct} editingProduct={editingProduct} setEditingProduct={setEditingProduct} />
+          <ProductsTab products={products} onAddProduct={onAddProduct} onBulkAddProducts={onBulkAddProducts} onUpdateProduct={onUpdateProduct} onDeleteProduct={onDeleteProduct} editingProduct={editingProduct} setEditingProduct={setEditingProduct} />
         )}
         {tab === "orders" && <OrdersTab orders={orders} onUpdateOrderStatus={onUpdateOrderStatus} onDeleteOrder={onDeleteOrder} />}
         {tab === "settings" && <SettingsTab settings={settings} onSaveSettings={onSaveSettings} />}
@@ -602,9 +610,11 @@ function AdminPanel({ products, orders, settings, onClose, onLogout, onAddProduc
   );
 }
 
-function ProductsTab({ products, onAddProduct, onUpdateProduct, onDeleteProduct, editingProduct, setEditingProduct }) {
+function ProductsTab({ products, onAddProduct, onBulkAddProducts, onUpdateProduct, onDeleteProduct, editingProduct, setEditingProduct }) {
   const empty = { name: "", category: "", image: "", cost: "", price: "" };
   const [form, setForm] = useState(empty);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState("");
 
   useEffect(() => {
     setForm(editingProduct ? { ...editingProduct } : empty);
@@ -628,8 +638,69 @@ function ProductsTab({ products, onAddProduct, onUpdateProduct, onDeleteProduct,
     setForm(empty);
   }
 
+  function downloadTemplate() {
+    const csv = "name,category,image,cost,price\nمكواة بخار محمولة,أدوات منزلية,https://example.com/image.jpg,217,340\n";
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "قالب-المنتجات.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleCsvFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult("");
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        const rows = results.data
+          .filter(r => r.name && r.price)
+          .map(r => ({
+            name: String(r.name).trim(),
+            category: (r.category && String(r.category).trim()) || "عام",
+            image: (r.image && String(r.image).trim()) || "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500",
+            cost: Number(r.cost) || 0,
+            price: Number(r.price) || 0,
+          }));
+        if (rows.length === 0) {
+          setImporting(false);
+          setImportResult("مفيش صفوف صالحة في الملف (لازم عمود name و price على الأقل)");
+          return;
+        }
+        const ok = await onBulkAddProducts(rows);
+        setImporting(false);
+        setImportResult(ok ? `تمام، اتضاف ${rows.length} منتج` : "حصل خطأ أثناء الاستيراد");
+        e.target.value = "";
+      },
+      error: () => {
+        setImporting(false);
+        setImportResult("مانفعش يقرا الملف، تأكد إنه CSV صحيح");
+      },
+    });
+  }
+
   return (
     <div>
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }} className="rounded-2xl p-4 mb-5">
+        <p style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold mb-3 text-sm">استيراد منتجات كتير مرة واحدة (CSV)</p>
+        <div className="flex gap-2 mb-2">
+          <button onClick={downloadTemplate} style={{ border: `1px solid ${COLORS.border}`, color: COLORS.text }} className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-semibold">
+            <Download size={14} /> نزّل القالب
+          </button>
+          <label style={{ background: COLORS.gold, color: "#1A1300" }} className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-semibold cursor-pointer">
+            <input type="file" accept=".csv" onChange={handleCsvFile} className="hidden" />
+            <Upload size={14} /> {importing ? "جاري الاستيراد..." : "ارفع الملف"}
+          </label>
+        </div>
+        {importResult && <p style={{ color: importResult.startsWith("تمام") ? COLORS.teal : COLORS.coral }} className="text-xs">{importResult}</p>}
+        <p style={{ color: COLORS.textDim }} className="text-[11px] mt-1">نزّل القالب الأول، املاه بالأعمدة (name, category, image, cost, price)، وارفعه تاني.</p>
+      </div>
+
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }} className="rounded-2xl p-4 mb-5">
         <p style={{ fontFamily: "Cairo, sans-serif" }} className="font-bold mb-3 text-sm">{editingProduct ? "تعديل منتج" : "منتج جديد"}</p>
         <div className="grid grid-cols-2 gap-2.5">
